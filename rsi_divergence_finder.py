@@ -16,17 +16,19 @@ class RSIDivergenceFinder:
     _client: UMFutures
     _pair: str
     _timeframe: str
-    _length: int
+    _rsi_length: int
+    _window_size: int
 
-    def __init__(self, client: UMFutures, pair: str, timeframe: str, length: int = 14):
+    def __init__(self, client: UMFutures, pair: str, timeframe: str, rsi_length: int = 14, window_size: int = 5):
         self._client = client
         self._pair = pair
         self._timeframe = timeframe
-        self._length = length
+        self._rsi_length = rsi_length
+        self._window_size = window_size
 
     def find(self) -> Tuple[DivergenceState, Optional[Tuple[pd.Series, pd.Series]]]:
         df = self._get_df()
-        
+
         # Find RSI_PH greater than the current RSI_PH and get the nearest RSI_PH
         current_rsi_ph = df[df['RSI_PH']].iloc[-1]
         nearest_rsi_ph = df[(df['RSI_PH']) & (df['Time'] < current_rsi_ph['Time']) & (df['RSI'] > current_rsi_ph['RSI'])].iloc[-1]
@@ -35,73 +37,58 @@ class RSIDivergenceFinder:
         nearest_rsi_pl = df[(df['RSI_PL']) & (df['Time'] < current_rsi_pl['Time']) & (df['RSI'] < current_rsi_pl['RSI'])].iloc[-1]
 
         if nearest_rsi_ph['RSI'] > current_rsi_ph['RSI']:
-            # Kiểm tra trong khoảng thời gian nearest_rsi_ph đến current_rsi_ph
-            # xem có PH hay không và điều điện là không empty & > 1 & có PH
-            selected_data = df[(df['Time'] >= nearest_rsi_ph['Time']) & (df['Time'] <= current_rsi_ph['Time']) & (df['PH'])]
-            if not selected_data.empty and len(selected_data) > 1:
-                res = self._is_higher_high(selected_data)
-                if not res is None: 
-                    return DivergenceState.BEARISH, res
+            high = self._get_highest_high_pivot(df, nearest_rsi_ph)
+            higher_high = self._get_highest_high_pivot(df, current_rsi_ph)
+            if high['High'] < higher_high['High']:
+                return DivergenceState.BEARISH, high, higher_high
 
         if nearest_rsi_pl['RSI'] < current_rsi_pl['RSI']:
-            selected_data = df[(df['Time'] >= nearest_rsi_pl['Time']) & (df['Time'] <= current_rsi_pl['Time']) & (df['PL'])]
-            if not selected_data.empty and len(selected_data) > 1:
-                res = self._is_lower_low(selected_data)
-                if not res is None:
-                    return DivergenceState.BULLISH, res
+            low = self._get_lowest_low_pivot(df, nearest_rsi_pl)
+            lower_low = self._get_lowest_low_pivot(df, current_rsi_pl)
+            if low['Low'] > lower_low['Low']:
+                return DivergenceState.BULLISH, low, lower_low
             
-        return DivergenceState.UNKNOW, None
+        return DivergenceState.UNKNOW, None, None
     
-    def _is_lower_low(self, df: pd.DataFrame) -> Optional[Tuple[pd.Series, pd.Series]]:
-        highest_low = df.head(1).iloc[-1]
-        lowest_low = None
-
-        for _, row in df.iterrows():
-            if not row['Time'] == highest_low['Time'] and row['Low'] < highest_low['Low']:
-                lowest_low = row
-
-        if lowest_low is None:
-            return lowest_low
-        
-        return highest_low, lowest_low
+    def _get_lowest_low_pivot(self, df: pd.DataFrame, pivot: pd.Series) -> pd.Series:
+        left_bars = df[df['Time'] < pivot['Time']].tail(self._window_size)
+        right_bars = df[df['Time'] > pivot['Time']].head(3)
+        merged_df = pd.concat([left_bars, right_bars])
+        lowest = merged_df.nsmallest(1, 'Low').iloc[0]
+        if lowest['Low'] > pivot['Low']:
+            lowest = pivot
+        return lowest
     
-    def _is_higher_high(self, df: pd.DataFrame) -> Optional[Tuple[pd.Series, pd.Series]]:
-        lowest_high = df.head(1).iloc[-1]
-        highest_high = None
-
-        for _, row in df.iterrows():
-            if not row['Time'] == lowest_high['Time'] and row['High'] > lowest_high['High']:
-                highest_high = row
-
-        if highest_high is None:
-            return highest_high
-        
-        return lowest_high, highest_high
-
+    def _get_highest_high_pivot(self, df: pd.DataFrame, pivot: pd.Series) -> pd.Series:
+        left_bars = df[df['Time'] < pivot['Time']].tail(self._window_size)
+        right_bars = df[df['Time'] > pivot['Time']].head(3)
+        merged_df = pd.concat([left_bars, right_bars])
+        highest = merged_df.nlargest(1, 'High').iloc[0]
+        if highest['High'] < pivot['High']:
+            highest = pivot
+        return highest
+    
     def _get_df(self) -> pd.DataFrame:
         klines = self._client.continuous_klines(
             pair=self._pair,
             contractType='PERPETUAL',
             interval=self._timeframe,
-            limit=1500
+            limit=1000
         )
         df = pd.DataFrame(klines)
-        df = df.iloc[:,:5]
-        df.columns = ['Time', 'Open', 'High', 'Low', 'Close']
+        df = df.iloc[:,:6]
+        df.columns = ['Time', 'Open', 'High', 'Low', 'Close', 'Volume']
 
         for col in df.columns[1:]:
             df[col] = df[col].astype(float)
 
         df['Time'] = pd.to_datetime(df['Time'], unit='ms')
-        df['RSI'] = ta.rsi(df['Close'], self._length)
+        df['RSI'] = ta.rsi(df['Close'], self._rsi_length)
 
         df.dropna(inplace=True)
 
-        window_size = 5
-        df['PH'] = df['High'] == df['High'].rolling(2 * window_size + 1, center=True).max()
-        df['PL'] = df['Low'] == df['Low'].rolling(2 * window_size + 1, center=True).min()
-        df['RSI_PH'] = df['RSI'] == df['RSI'].rolling(2 * window_size + 1, center=True).max()
-        df['RSI_PL'] = df['RSI'] == df['RSI'].rolling(2 * window_size + 1, center=True).min()
+        df['RSI_PH'] = df['RSI'] == df['RSI'].rolling(2 * self._window_size + 1, center=True).max()
+        df['RSI_PL'] = df['RSI'] == df['RSI'].rolling(2 * self._window_size + 1, center=True).min()
         
         return df
     
