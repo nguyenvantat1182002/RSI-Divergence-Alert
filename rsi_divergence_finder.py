@@ -27,8 +27,8 @@ class RSIDivergenceFinder:
         self._window_size = window_size
 
     def find(self) -> Tuple[DivergenceState, Optional[Tuple[pd.Series, pd.Series]]]:
-        df = self._get_df()
-
+        df = self._get_df().tail(100)
+        
         # Find RSI_PH greater than the current RSI_PH and get the nearest RSI_PH
         current_rsi_ph = df[df['RSI_PH']].iloc[-1]
         nearest_rsi_ph = df[(df['RSI_PH']) & (df['Time'] < current_rsi_ph['Time']) & (df['RSI'] > current_rsi_ph['RSI'])].iloc[-1]
@@ -40,15 +40,15 @@ class RSIDivergenceFinder:
             high = self._get_highest_high_pivot(df, nearest_rsi_ph)
             higher_high = self._get_highest_high_pivot(df, current_rsi_ph)
             if high['High'] < higher_high['High']:
-                return DivergenceState.BEARISH, high, higher_high
+                return df, DivergenceState.BEARISH, high, higher_high, nearest_rsi_ph, current_rsi_ph
 
         if nearest_rsi_pl['RSI'] < current_rsi_pl['RSI']:
             low = self._get_lowest_low_pivot(df, nearest_rsi_pl)
             lower_low = self._get_lowest_low_pivot(df, current_rsi_pl)
             if low['Low'] > lower_low['Low']:
-                return DivergenceState.BULLISH, low, lower_low
+                return df, DivergenceState.BULLISH, low, lower_low, nearest_rsi_pl, current_rsi_pl
             
-        return DivergenceState.UNKNOW, None, None
+        return df, DivergenceState.UNKNOW, None, None, None, None
     
     def _get_lowest_low_pivot(self, df: pd.DataFrame, pivot: pd.Series) -> pd.Series:
         left_bars = df[df['Time'] < pivot['Time']].tail(self._window_size)

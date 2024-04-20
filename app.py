@@ -1,4 +1,8 @@
 import time
+import pandas as pd
+import mplfinance as mpf
+import matplotlib.pyplot as plt
+import os
 
 from discord_webhook import DiscordWebhook, DiscordEmbed
 from datetime import datetime, timedelta
@@ -31,6 +35,43 @@ HOOK_LINKS = {
 TIMEFRAMES = ['5m', '15m', '1h', '4h', '1d']
 
 
+def savefig(file_name: str,
+            df: pd.DataFrame,
+            state: DivergenceState,
+            point_1: pd.Series,
+            point_2: pd.Series,
+            rsi_point_1: pd.Series,
+            rsi_point_2: pd.Series):
+    df = df.copy()
+    df = df.set_index('Time')
+    
+    colors = None
+    alines_price = None
+
+    match state:
+        case DivergenceState.BEARISH:
+            colors = ['r', 'r']
+            alines_price = [(point_1['Time'], point_1['High']), (point_2['Time'], point_2['High'])]
+        case DivergenceState.BULLISH:
+            colors = ['g', 'g']
+            alines_price = [(point_1['Time'], point_1['Low']), (point_2['Time'], point_2['Low'])]
+    
+    alines_rsi = [(rsi_point_1['Time'], rsi_point_1['RSI']), (rsi_point_2['Time'], rsi_point_2['RSI'])]
+    plots = [
+        mpf.make_addplot(df['RSI'], panel=2, color='black', ylabel='RSI', fill_between=dict(y1=30, y2=30, color="gray")),
+        mpf.make_addplot(df['RSI'], panel=2, color='black', ylabel='RSI', fill_between=dict(y1=70, y2=70, color="gray")),
+    ]
+
+    s = mpf.make_mpf_style(base_mpf_style='yahoo',rc={'grid.alpha':0})
+    _, axs = mpf.plot(df, type='candle', style=s, volume=True, addplot=plots, alines=dict(alines=alines_price, colors=colors), returnfig=True)
+    
+    alines_rsi = mpf._utils._construct_aline_collections(dict(alines=alines_rsi, colors=colors), df.index)
+    axs[4].add_collection(alines_rsi)
+
+    plt.savefig(file_name, bbox_inches='tight')
+    plt.close()
+
+
 def get_pairs(client: UMFutures) -> List[str]:
     info = client.exchange_info()
     symbols = list(filter(lambda x: x['contractType'] == 'PERPETUAL', info['symbols']))
@@ -60,7 +101,7 @@ while True:
                 finder = RSIDivergenceFinder(client, pair, timeframe)
 
                 try:
-                    state, point_1, point_2 = finder.find()
+                    df, state, point_1, point_2, rsi_point_1, rsi_point_2 = finder.find()
                     if not state == DivergenceState.UNKNOW:
                         mess = f'{state} {pair} {timeframe}'
                         color = None
@@ -76,18 +117,26 @@ while True:
                                 mess += f' {point_1["Time"]} {point_1["Low"]} {point_2["Time"]} {point_2["Low"]}'
                         print(mess)
 
-                        embed = DiscordEmbed(title=f"{pair}: {timeframe}", description=description, color=color)
+                        file_path = f'{os.getcwd()}\\{pair}_{timeframe}.png'
+                        file_name = os.path.basename(file_path)
+                        savefig(file_path, df, state, point_1, point_2, rsi_point_1, rsi_point_2)
 
-                        webhook = DiscordWebhook(url=HOOK_LINKS[category])
-                        webhook.add_embed(embed)
+                        with open(file_path, "rb") as f:
+                            image = file=f.read()
+                        os.remove(file_path)
+
+                        content = f"{pair}: {timeframe} - {description}"
+                        
+                        webhook = DiscordWebhook(url=HOOK_LINKS[category], content=content)
+                        webhook.add_file(file=image, filename=file_name)
                         response = webhook.execute()
                         if not response.status_code == 200:
                             print(response.text)
                             exit(1)
 
                         if pair == 'BTCUSDT':
-                            webhook = DiscordWebhook(url=HOOK_LINKS['btc'])
-                            webhook.add_embed(embed)
+                            webhook = DiscordWebhook(url=HOOK_LINKS['btc'], content=content)
+                            webhook.add_file(file=image, filename=file_name)
                             response = webhook.execute()
                             if not response.status_code == 200:
                                 print(response.text)
