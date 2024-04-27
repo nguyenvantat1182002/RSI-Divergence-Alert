@@ -3,8 +3,9 @@ import pandas as pd
 import mplfinance as mpf
 import matplotlib.pyplot as plt
 import os
+import pandas_ta as ta
 
-from discord_webhook import DiscordWebhook, DiscordEmbed
+from discord_webhook import DiscordWebhook
 from datetime import datetime, timedelta
 from rsi_divergence_finder import RSIDivergenceFinder, DivergenceState
 from binance.um_futures import UMFutures
@@ -35,6 +36,13 @@ HOOK_LINKS = {
 TIMEFRAMES = ['5m', '15m', '1h', '4h', '1d']
 
 
+def highlight_deviation(df: pd.DataFrame, threshold: float = 0.9):
+    mco = []
+    for _, row in df.iterrows():
+        mco.append('blue' if row['DEV'] > threshold or row['DEV'] < -threshold else None)
+    return mco
+
+
 def savefig(file_name: str,
             df: pd.DataFrame,
             state: DivergenceState,
@@ -44,6 +52,7 @@ def savefig(file_name: str,
             rsi_point_2: pd.Series):
     df = df.copy()
     df = df.set_index('Time')
+    df['EMA_50'] = ta.ema(df['Close'], 50)
     
     colors = None
     alines_price = None
@@ -57,13 +66,27 @@ def savefig(file_name: str,
             alines_price = [(point_1['Time'], point_1['Low']), (point_2['Time'], point_2['Low'])]
     
     alines_rsi = [(rsi_point_1['Time'], rsi_point_1['RSI']), (rsi_point_2['Time'], rsi_point_2['RSI'])]
+
     plots = [
-        mpf.make_addplot(df['RSI'], panel=2, color='black', ylabel='RSI', fill_between=dict(y1=30, y2=30, color="gray")),
-        mpf.make_addplot(df['RSI'], panel=2, color='black', ylabel='RSI', fill_between=dict(y1=70, y2=70, color="gray")),
+        mpf.make_addplot(df['RSI'], panel=2, color='black', fill_between=dict(y1=30, y2=30, color="gray")),
+        mpf.make_addplot(df['RSI'], panel=2, color='black', fill_between=dict(y1=70, y2=70, color="gray")),
+        mpf.make_addplot(df['EMA_50'], panel=0, color='black', width=1),
     ]
 
+    mco = highlight_deviation(df)
     s = mpf.make_mpf_style(base_mpf_style='yahoo',rc={'grid.alpha':0})
-    _, axs = mpf.plot(df, type='candle', style=s, volume=True, addplot=plots, alines=dict(alines=alines_price, colors=colors), returnfig=True)
+    _, axs = mpf.plot(df,
+                      type='candle',
+                      style=s,
+                      volume=True,
+                      addplot=plots,
+                      alines=dict(alines=alines_price, colors=colors),
+                      returnfig=True,
+                      datetime_format='',
+                      ylabel='',
+                      ylabel_lower='',
+                      marketcolor_overrides=mco,
+                      mco_faceonly=False)
     
     alines_rsi = mpf._utils._construct_aline_collections(dict(alines=alines_rsi, colors=colors), df.index)
     axs[4].add_collection(alines_rsi)
@@ -81,7 +104,6 @@ def get_pairs(client: UMFutures) -> List[str]:
 client = UMFutures()
 watchlist_tokens: Dict[str, Dict[str, datetime]] = {}
 timedeltas = {
-    '1m': timedelta(minutes=1),
     '5m': timedelta(minutes=5),
     '15m': timedelta(minutes=15),
     '1h': timedelta(hours=1),
@@ -141,8 +163,8 @@ while True:
                             if not response.status_code == 200:
                                 print(response.text)
                                 exit(1)
-                except Exception:
-                    pass
+                except Exception as ex:
+                    print(ex)
                 finally:
                     watchlist_tokens[pair].update({
                         timeframe: {
