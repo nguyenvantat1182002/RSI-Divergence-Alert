@@ -30,7 +30,7 @@ class RSIDivergenceFinder:
 
     def find(self) -> Tuple[DivergenceState, Optional[Tuple[pd.Series, pd.Series]]]:
         df = self._get_df().tail(100)
-        
+
         # Find RSI_PH greater than the current RSI_PH and get the nearest RSI_PH
         current_rsi_ph = df[df['RSI_PH']].iloc[-1]
         nearest_rsi_ph = df[(df['RSI_PH']) & (df['Time'] < current_rsi_ph['Time']) & (df['RSI'] > current_rsi_ph['RSI'])]
